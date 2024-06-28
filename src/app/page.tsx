@@ -1,113 +1,197 @@
-import Image from "next/image";
+"use client";
+
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Client } from "@stomp/stompjs";
+import MessagesView from "@/components/messagesView";
+import Message from "@/models/message";
+import User from "@/models/user";
+import { generateId } from "@/utils/crypto";
+import UsersView from "@/components/usersView";
+import { getOrGenerateUserId, loadUsers, saveUsers } from "@/utils/storage";
+
+const stompClient = new Client({
+  brokerURL: 'ws://localhost:8888/ws',
+});
+
+const myUserId = getOrGenerateUserId();
+const initialUsers = loadUsers();
 
 export default function Home() {
+  const [connected, setConnected] = useState<boolean | null>(null);
+  const [inputMessage, setInputMessage] = useState("");
+  const [inputUsername, setInputUsername] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [users, setUsers] = useState(initialUsers);
+  const [selectedUserId, setSelectedUserId] = useState("");
+
+  const myUser = useMemo(
+    () => {
+      const user = users.find(user => user.id === myUserId);
+      console.log("Loaded my user:", user);
+      return user;
+    },
+    [users]
+  );
+
+  const onMessage = useCallback((message: Message) => {
+    setMessages(oldMessages => {
+      // check for duplicates
+      if (oldMessages.find(m => m.id === message.id)) {
+        return oldMessages;
+      } else {
+        return [...oldMessages, message]
+      }
+    });
+  }, []);
+
+  const onSelectUser = useCallback((userId: string) => {
+    setSelectedUserId(userId);
+  }, []);
+
+  const connect = useCallback(() => {
+    stompClient.activate();
+  }, []);
+
+  const sendMessage = useCallback(() => {
+    const message: Message = {
+      id: generateId(),
+      fromId: myUserId!,
+      toId: selectedUserId!,
+      createdAt: new Date().toJSON(),
+      body: inputMessage
+    };
+    stompClient.publish({
+      destination: `/app/message`,
+      body: JSON.stringify(message)
+    });
+    // add to local
+    setMessages(oldMessages => [...oldMessages, message]);
+    // reset
+    setInputMessage("");
+  }, [inputMessage, selectedUserId]);
+
+  const createUser = useCallback(() => {
+    const user: User = {
+      id: myUserId,
+      name: inputUsername,
+      lastSeen: new Date().toJSON(),
+    }
+    stompClient.publish({
+      destination: "/app/join",
+      body: JSON.stringify(user),
+    })
+  }, [inputUsername]);
+
+  useEffect(() => {
+    connect();
+  }, [connect]);
+
+  useEffect(() => {
+    stompClient.onConnect = (frame) => {
+      setConnected(true);
+      console.log('Connected: ' + frame);
+
+      stompClient.subscribe(`/topic/message/${myUserId}`, ({ body }) => {
+        onMessage(JSON.parse(body));
+      });
+
+      stompClient.subscribe('/topic/user', ({ body }) => {
+        const newUser: User = JSON.parse(body);
+        if (newUser.id === myUserId) {
+          console.log("New user is myself");
+        } else {
+          console.log("New user", newUser);
+        }
+
+        const newUsers = loadUsers().map(user => newUser.id === user.id ? newUser : user);
+        if (!newUsers.find(user => user.id === newUser.id)) {
+          // not existing
+          newUsers.push(newUser);
+        }
+        setUsers(newUsers);
+        saveUsers(newUsers);
+      });
+
+      // broadcast myself again
+      if (myUser) {
+        stompClient.publish({
+          destination: "/app/join",
+          body: JSON.stringify(myUser),
+        })
+      }
+    };
+
+    stompClient.onWebSocketError = (error) => {
+      setConnected(false);
+      console.error('Error with websocket', error);
+    };
+
+    stompClient.onStompError = (frame) => {
+      console.error('Broker reported error: ' + frame.headers['message']);
+      console.error('Additional details: ' + frame.body);
+    };
+
+  }, [inputUsername, myUser, onMessage, users]);
+
+  const onMessageInputChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
+    setInputMessage(e.target.value);
+  }, []);
+
+  const onUsernameInputChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    setInputUsername(e.target.value);
+  }, []);
+
+  const inputDisabled = useMemo(() => !myUser || !selectedUserId, [myUser, selectedUserId]);
+  const inputButtonDisabled = useMemo(() => inputDisabled || !inputMessage, [inputDisabled, inputMessage]);
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">src/app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:size-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{" "}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
-        </div>
+    <div className="container mx-auto">
+      <div className="bg-white border rounded mt-8 px-4 pt-6 pb-4">
+
+        {!connected ? (connected === null ? (
+          <div>Connecting...</div>
+        ) : (
+          <div>
+            <p>
+              Connection error
+            </p>
+            <button className="btn btn-blue" onClick={connect}>Retry connect</button>
+          </div>
+        )) :
+          <>
+            <div className="mb-4 flex">
+              {!myUser ? (
+                <>
+                  <input
+                    className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                    id="username"
+                    type="text"
+                    placeholder="Input username..."
+                    value={inputUsername}
+                    onChange={onUsernameInputChange}
+                  />
+                  <button onClick={createUser} className="btn btn-blue ml-1">Save</button>
+                </>
+              ) : (
+                <div className="text-xs">User ID: {myUser.id}</div>
+              )}
+            </div>
+            <UsersView users={users} myId={myUserId} selectedId={selectedUserId} onSelect={onSelectUser} />
+
+            <MessagesView selectedId={selectedUserId} myId={myUserId} messages={messages} users={users} />
+            <div className="mt-1 mb-4 flex">
+              <textarea
+                disabled={inputDisabled}
+                className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                id="message"
+                placeholder={inputDisabled ? "Select user to chat with" : "Input here..."}
+                value={inputMessage}
+                onChange={onMessageInputChange} />
+              <button disabled={inputButtonDisabled} onClick={sendMessage} className={"btn btn-blue ml-1" + (inputButtonDisabled && " opacity-50 cursor-not-allowed")}>Send</button>
+            </div>
+          </>
+        }
       </div>
-
-      <div className="relative z-[-1] flex place-items-center before:absolute before:h-[300px] before:w-full before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-full after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 sm:before:w-[480px] sm:after:w-[240px] before:lg:h-[360px]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
-
-      <div className="mb-32 grid text-center lg:mb-0 lg:w-full lg:max-w-5xl lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Docs{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Learn{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Templates{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Explore starter templates for Next.js.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Deploy{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-balance text-sm opacity-50">
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
-      </div>
-    </main>
+    </div>
   );
 }
