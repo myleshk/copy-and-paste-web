@@ -1,37 +1,28 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Client } from "@stomp/stompjs";
+import { Frame, Stomp } from "@stomp/stompjs";
 import MessagesView from "@/components/messagesView";
 import Message from "@/models/message";
 import User from "@/models/user";
 import { generateId } from "@/utils/crypto";
 import UsersView from "@/components/usersView";
-import { getOrGenerateUserId, loadUsers, saveUsers } from "@/utils/storage";
+import SockJS from "sockjs-client";
 
-const stompClient = new Client({
-  brokerURL: 'ws://localhost:8888/ws',
-});
-
-const myUserId = getOrGenerateUserId();
-const initialUsers = loadUsers();
+const socket = new SockJS(process.env.REACT_APP_WEBSOCKET_PATH ?? 'http://localhost:8888/ws')
+const stompClient = Stomp.over(socket);
 
 export default function Home() {
-  const [connected, setConnected] = useState<boolean | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [inputMessage, setInputMessage] = useState("");
-  const [inputUsername, setInputUsername] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [users, setUsers] = useState(initialUsers);
+  const [users, setUsers] = useState<User[]>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
 
-  const myUser = useMemo(
-    () => {
-      const user = users.find(user => user.id === myUserId);
-      console.log("Loaded my user:", user);
-      return user;
-    },
-    [users]
-  );
+  const inputDisabled = useMemo(() => !userId || !selectedUserId, [selectedUserId, userId]);
+  const inputButtonDisabled = useMemo(() => inputDisabled || !inputMessage, [inputDisabled, inputMessage]);
+  const otherUsers = useMemo(() => users.filter(u => u.id !== userId), [userId, users])
+  const me = useMemo(() => users.find(u => u.id == userId), [userId, users])
 
   const onMessage = useCallback((message: Message) => {
     setMessages(oldMessages => {
@@ -49,13 +40,23 @@ export default function Home() {
   }, []);
 
   const connect = useCallback(() => {
-    stompClient.activate();
+
+    stompClient.connect({}, (frame: Frame) => {
+      const userId = frame.headers['user-name'];
+      setUserId(userId);
+      console.log(`Connected with user ID ${userId}`);
+
+      stompClient.subscribe('/topic/user', ({ body }) => {
+        const newUsers: User[] = JSON.parse(body);
+        setUsers(newUsers);
+      });
+    });
   }, []);
 
   const sendMessage = useCallback(() => {
     const message: Message = {
       id: generateId(),
-      fromId: myUserId!,
+      fromId: userId!,
       toId: selectedUserId!,
       createdAt: new Date().toJSON(),
       body: inputMessage
@@ -68,61 +69,19 @@ export default function Home() {
     setMessages(oldMessages => [...oldMessages, message]);
     // reset
     setInputMessage("");
-  }, [inputMessage, selectedUserId]);
+  }, [inputMessage, selectedUserId, userId]);
 
-  const createUser = useCallback(() => {
-    const user: User = {
-      id: myUserId,
-      name: inputUsername,
-      lastSeen: new Date().toJSON(),
-    }
-    stompClient.publish({
-      destination: "/app/join",
-      body: JSON.stringify(user),
-    })
-  }, [inputUsername]);
+  const onMessageInputChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
+    setInputMessage(e.target.value);
+  }, []);
 
   useEffect(() => {
     connect();
   }, [connect]);
 
   useEffect(() => {
-    stompClient.onConnect = (frame) => {
-      setConnected(true);
-      console.log('Connected: ' + frame);
-
-      stompClient.subscribe(`/topic/message/${myUserId}`, ({ body }) => {
-        onMessage(JSON.parse(body));
-      });
-
-      stompClient.subscribe('/topic/user', ({ body }) => {
-        const newUser: User = JSON.parse(body);
-        if (newUser.id === myUserId) {
-          console.log("New user is myself");
-        } else {
-          console.log("New user", newUser);
-        }
-
-        const newUsers = loadUsers().map(user => newUser.id === user.id ? newUser : user);
-        if (!newUsers.find(user => user.id === newUser.id)) {
-          // not existing
-          newUsers.push(newUser);
-        }
-        setUsers(newUsers);
-        saveUsers(newUsers);
-      });
-
-      // broadcast myself again
-      if (myUser) {
-        stompClient.publish({
-          destination: "/app/join",
-          body: JSON.stringify(myUser),
-        })
-      }
-    };
-
     stompClient.onWebSocketError = (error) => {
-      setConnected(false);
+      setUserId("");
       console.error('Error with websocket', error);
     };
 
@@ -131,24 +90,32 @@ export default function Home() {
       console.error('Additional details: ' + frame.body);
     };
 
-  }, [inputUsername, myUser, onMessage, users]);
+  }, [onMessage, users]);
 
-  const onMessageInputChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
-    setInputMessage(e.target.value);
-  }, []);
+  useEffect(() => {
+    if (!userId) {
+      return;
+    }
+    const subscription = stompClient.subscribe(`/user/queue/message`, ({ body }) => {
+      onMessage(JSON.parse(body));
+    });
+    return function cleanup() {
+      subscription.unsubscribe();
+    }
+  }, [onMessage, userId])
 
-  const onUsernameInputChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
-    setInputUsername(e.target.value);
-  }, []);
-
-  const inputDisabled = useMemo(() => !myUser || !selectedUserId, [myUser, selectedUserId]);
-  const inputButtonDisabled = useMemo(() => inputDisabled || !inputMessage, [inputDisabled, inputMessage]);
+  useEffect(() => {
+    if (!selectedUserId && otherUsers.length === 1) {
+      // auto select the only one
+      setSelectedUserId(otherUsers[0].id!)
+    }
+  }, [otherUsers, selectedUserId])
 
   return (
     <div className="container mx-auto">
       <div className="bg-white border rounded mt-8 px-4 pt-6 pb-4">
 
-        {!connected ? (connected === null ? (
+        {!userId ? (userId === null ? (
           <div>Connecting...</div>
         ) : (
           <div>
@@ -159,26 +126,19 @@ export default function Home() {
           </div>
         )) :
           <>
-            <div className="mb-4 flex">
-              {!myUser ? (
-                <>
-                  <input
-                    className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
-                    id="username"
-                    type="text"
-                    placeholder="Input username..."
-                    value={inputUsername}
-                    onChange={onUsernameInputChange}
-                  />
-                  <button onClick={createUser} className="btn btn-blue ml-1">Save</button>
-                </>
-              ) : (
-                <div className="text-xs">User ID: {myUser.id}</div>
-              )}
-            </div>
-            <UsersView users={users} myId={myUserId} selectedId={selectedUserId} onSelect={onSelectUser} />
+            {me && (
+              <div className="mb-4 text-xs">
+                <div>
+                  <div>ID: {userId}</div>
+                </div>
+                <div>
+                  <div>Name: {me.name}</div>
+                </div>
+              </div>
+            )}
+            <UsersView users={otherUsers} selectedId={selectedUserId} onSelect={onSelectUser} />
 
-            <MessagesView selectedId={selectedUserId} myId={myUserId} messages={messages} users={users} />
+            <MessagesView selectedId={selectedUserId} myId={userId} messages={messages} users={users} />
             <div className="mt-1 mb-4 flex">
               <textarea
                 disabled={inputDisabled}

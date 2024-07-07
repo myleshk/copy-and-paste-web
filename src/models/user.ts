@@ -1,5 +1,5 @@
 export default interface User {
-    id: string;
+    id?: string;
     name: string;
-    lastSeen: string;
+    lastSeen?: string;
 }
