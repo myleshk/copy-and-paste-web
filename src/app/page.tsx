@@ -60,9 +60,8 @@ export default function Home() {
     setInputMessage(e.target.value);
   }, []);
 
-  useEffect(()=>{
-    const socket = new SockJS(process.env.NEXT_PUBLIC_WEBSOCKET_PATH || '/ws')
-    stompClient.current = Stomp.over(socket);
+  useEffect(() => {
+    stompClient.current = Stomp.over(() => new SockJS(process.env.NEXT_PUBLIC_WEBSOCKET_PATH || '/ws'));
 
     stompClient.current.onWebSocketError = (error) => {
       setUserId("");
@@ -73,7 +72,7 @@ export default function Home() {
       console.error('Broker reported error: ' + frame.headers['message']);
       console.error('Additional details: ' + frame.body);
     };
-    
+
     // connect
     stompClient.current.connect({}, (frame: Frame) => {
       const userId = frame.headers['user-name'];
@@ -84,20 +83,12 @@ export default function Home() {
         const newUsers: User[] = JSON.parse(body);
         setUsers(newUsers);
       });
-    });
-  },[]);
 
-  useEffect(() => {
-    if (!userId) {
-      return;
-    }
-    const subscription = stompClient.current!.subscribe(`/user/queue/message`, ({ body }) => {
-      onMessage(JSON.parse(body));
+      stompClient.current!.subscribe(`/user/queue/message`, ({ body }) => {
+        onMessage(JSON.parse(body));
+      });
     });
-    return function cleanup() {
-      subscription.unsubscribe();
-    }
-  }, [onMessage, userId])
+  }, [onMessage]);
 
   useEffect(() => {
     if (!selectedUserId && otherUsers.length === 1) {
@@ -131,7 +122,11 @@ export default function Home() {
                 </div>
               </div>
             )}
-            <UsersView users={otherUsers} selectedId={selectedUserId} onSelect={onSelectUser} />
+            {otherUsers.length ? (
+              <UsersView users={otherUsers} selectedId={selectedUserId} onSelect={onSelectUser} />
+            ) : (
+              <div>Waiting for other users...</div>
+            )}
 
             <MessagesView selectedId={selectedUserId} myId={userId} messages={messages} users={users} />
             <div className="mt-1 mb-4 flex">
