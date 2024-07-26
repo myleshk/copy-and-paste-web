@@ -53,3 +53,10 @@ export function formatLastSeenFromJson(dateString?: string) {
 
     return obj.format("Last seen at YYYY-MM-DD");
 }
+
+export function formatLastSeenFromDate(date?: Date) {
+    if (!date) {
+        return "";
+    }
+     return dayjs(date).local().format("hh:mm:ss A");
+}

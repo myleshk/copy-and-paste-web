@@ -3,5 +3,6 @@ export default interface Message {
     toId: string;
     fromId: string;
     createdAt: string;
-    body: string;
+    bodyText: string;
+    bodyFile: string;
 }
