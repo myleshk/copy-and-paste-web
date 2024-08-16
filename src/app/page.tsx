@@ -174,13 +174,26 @@ export default function Home() {
 
         // Setup ice handling
         peerConnectionRef.current.onicecandidate = (event) => {
-          if (event.candidate?.usernameFragment) {
-            // alert(event.candidate?.usernameFragment);
-            webSocketSend({
-              event: "candidate",
-              data: event.candidate
-            });
+          const { candidate } = event;
+          if (!candidate) {
+            return;
           }
+          const candidateJSON = candidate.toJSON();
+          const usernameFragment = candidate?.usernameFragment;
+          if (!usernameFragment && !candidateJSON.usernameFragment) {
+            console.log("Skip candidates without usernameFragment")
+            return;
+          }
+
+          if (!candidateJSON.usernameFragment) {
+            // TODO: improve the fix for iOS
+            candidateJSON.usernameFragment = usernameFragment;
+          }
+
+          webSocketSend({
+            event: "candidate",
+            data: candidateJSON
+          });
         };
 
         // creating data channel
