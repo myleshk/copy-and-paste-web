@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import MessagesView from "@/components/messagesView";
 import Message from "@/models/message";
 import { generateId } from "@/utils/crypto";
@@ -162,7 +162,15 @@ export default function Home() {
         console.log('Connected to signaling server');
 
         // initialize
-        peerConnectionRef.current = new RTCPeerConnection({});
+        peerConnectionRef.current = new RTCPeerConnection({
+          iceServers: [
+            {
+              urls: process.env.NEXT_PUBLIC_TURN_SERVER_URL ?? "",
+              username: process.env.NEXT_PUBLIC_TURN_SERVER_USERNAME,
+              credential: process.env.NEXT_PUBLIC_TURN_SERVER_PASSWORD
+            }
+          ]
+        });
 
         // Setup ice handling
         peerConnectionRef.current.onicecandidate = (event) => {
