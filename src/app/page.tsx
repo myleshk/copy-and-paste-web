@@ -164,6 +164,7 @@ export default function Home() {
         // initialize
         peerConnectionRef.current = new RTCPeerConnection({
           iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
             {
               urls: process.env.NEXT_PUBLIC_TURN_SERVER_URL ?? "",
               username: process.env.NEXT_PUBLIC_TURN_SERVER_USERNAME,
